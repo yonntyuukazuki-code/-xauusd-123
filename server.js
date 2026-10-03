@@ -4,42 +4,26 @@ import WebSocket from "ws";
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const SYMBOL = "OANDA:XAUUSD";
+
+const TIMEFRAMES = {
+  m5:  { interval: "5",   label: "M5",  bars: 100 },
+  m15: { interval: "15",  label: "M15", bars: 100 },
+  h1:  { interval: "60",  label: "H1",  bars: 100 },
+  h4:  { interval: "240", label: "H4",  bars: 100 },
+  d1:  { interval: "1D",  label: "D1",  bars: 100 }
+};
+
 function frame(message) {
   const data = JSON.stringify(message);
   return `~m~${data.length}~m~${data}`;
 }
 
 function session(prefix) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 14)}`;
+  return `${prefix}_${Math.random()
+    .toString(36)
+    .slice(2, 14)}`;
 }
-
-const TIMEFRAMES = {
-  m5: {
-    interval: "5",
-    label: "M5",
-    bars: 100
-  },
-  m15: {
-    interval: "15",
-    label: "M15",
-    bars: 100
-  },
-  h1: {
-    interval: "60",
-    label: "H1",
-    bars: 100
-  },
-  h4: {
-    interval: "240",
-    label: "H4",
-    bars: 100
-  },
-  d1: {
-    interval: "1D",
-    label: "D1",
-    bars: 100
-  }
-};
 
 function getCandles(timeframe) {
   return new Promise((resolve, reject) => {
@@ -65,7 +49,15 @@ function getCandles(timeframe) {
 
     let finished = false;
 
-    const finishError = error => {
+    const timeout = setTimeout(() => {
+      finishError(
+        new Error(
+          `TradingView timeout (${config.label})`
+        )
+      );
+    }, 20000);
+
+    function finishError(error) {
       if (finished) return;
 
       finished = true;
@@ -76,13 +68,20 @@ function getCandles(timeframe) {
       } catch {}
 
       reject(error);
-    };
+    }
 
-    const timeout = setTimeout(() => {
-      finishError(
-        new Error("TradingView timeout")
-      );
-    }, 20000);
+    function finishSuccess(data) {
+      if (finished) return;
+
+      finished = true;
+      clearTimeout(timeout);
+
+      try {
+        ws.close();
+      } catch {}
+
+      resolve(data);
+    }
 
     ws.on("open", () => {
       const send = (method, params) => {
@@ -118,7 +117,7 @@ function getCandles(timeframe) {
 
       send("quote_add_symbols", [
         quoteSession,
-        "OANDA:XAUUSD",
+        SYMBOL,
         {
           flags: ["force_permission"]
         }
@@ -127,7 +126,7 @@ function getCandles(timeframe) {
       const symbolDescriptor =
         "=" +
         JSON.stringify({
-          symbol: "OANDA:XAUUSD",
+          symbol: SYMBOL,
           adjustment: "splits"
         });
 
@@ -150,6 +149,7 @@ function getCandles(timeframe) {
     ws.on("message", raw => {
       const text = raw.toString();
 
+      // TradingView heartbeat
       const heartbeatRegex =
         /~m~\d+~m~(~h~\d+)/g;
 
@@ -159,11 +159,14 @@ function getCandles(timeframe) {
         (heartbeat =
           heartbeatRegex.exec(text)) !== null
       ) {
-        ws.send(
-          `~m~${heartbeat[1].length}~m~${heartbeat[1]}`
-        );
+        try {
+          ws.send(
+            `~m~${heartbeat[1].length}~m~${heartbeat[1]}`
+          );
+        } catch {}
       }
 
+      // TradingView frames
       const parts =
         text.split(/~m~\d+~m~/);
 
@@ -223,7 +226,10 @@ function getCandles(timeframe) {
           .map(bar => {
             const v = bar?.v;
 
-            if (!Array.isArray(v)) {
+            if (
+              !Array.isArray(v) ||
+              v.length < 5
+            ) {
               return null;
             }
 
@@ -249,18 +255,9 @@ function getCandles(timeframe) {
           continue;
         }
 
-        if (finished) return;
-
-        finished = true;
-        clearTimeout(timeout);
-
-        try {
-          ws.close();
-        } catch {}
-
-        resolve({
+        finishSuccess({
           ok: true,
-          symbol: "OANDA:XAUUSD",
+          symbol: SYMBOL,
           timeframe: config.label,
           interval: config.interval,
           count: candles.length,
@@ -298,7 +295,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "xauusd-123",
-    symbol: "OANDA:XAUUSD",
+    symbol: SYMBOL,
 
     endpoints: {
       M5: "/xauusd/m5",
@@ -314,29 +311,40 @@ app.get("/", (req, res) => {
 
 // ==========================================
 // ALL TIMEFRAMES
-// IMPORTANT: must be before /xauusd/:timeframe
+// Sequential to avoid 5 simultaneous
+// TradingView WebSocket connections
 // ==========================================
 
 app.get("/xauusd/all", async (req, res) => {
   try {
-    const [
-      m5,
-      m15,
-      h1,
-      h4,
-      d1
-    ] = await Promise.all([
-      getCandles("m5"),
-      getCandles("m15"),
-      getCandles("h1"),
-      getCandles("h4"),
-      getCandles("d1")
-    ]);
+    const startedAt = Date.now();
+
+    const m5 =
+      await getCandles("m5");
+
+    const m15 =
+      await getCandles("m15");
+
+    const h1 =
+      await getCandles("h1");
+
+    const h4 =
+      await getCandles("h4");
+
+    const d1 =
+      await getCandles("d1");
+
+    res.set("Cache-Control", "no-store");
 
     res.json({
       ok: true,
-      symbol: "OANDA:XAUUSD",
-      generatedAt: new Date().toISOString(),
+      symbol: SYMBOL,
+
+      generatedAt:
+        new Date().toISOString(),
+
+      durationMs:
+        Date.now() - startedAt,
 
       counts: {
         M5: m5.candles.length,
@@ -360,7 +368,9 @@ app.get("/xauusd/all", async (req, res) => {
 
     res.status(500).json({
       ok: false,
-      error: error.message
+      error:
+        error?.message ||
+        String(error)
     });
   }
 });
@@ -368,43 +378,63 @@ app.get("/xauusd/all", async (req, res) => {
 
 // ==========================================
 // SINGLE TIMEFRAME
+// Keep this AFTER /xauusd/all
 // ==========================================
 
-app.get("/xauusd/:timeframe", async (req, res) => {
-  try {
-    const timeframe =
-      req.params.timeframe.toLowerCase();
+app.get(
+  "/xauusd/:timeframe",
+  async (req, res) => {
+    try {
+      const timeframe =
+        req.params.timeframe.toLowerCase();
 
-    if (!TIMEFRAMES[timeframe]) {
-      return res.status(400).json({
+      if (!TIMEFRAMES[timeframe]) {
+        return res
+          .status(400)
+          .json({
+            ok: false,
+            error:
+              "Unsupported timeframe",
+
+            supported:
+              Object.keys(TIMEFRAMES)
+          });
+      }
+
+      const data =
+        await getCandles(timeframe);
+
+      res.set(
+        "Cache-Control",
+        "no-store"
+      );
+
+      res.json(data);
+
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
         ok: false,
-        error: "Unsupported timeframe",
-        supported: Object.keys(TIMEFRAMES)
+        error:
+          error?.message ||
+          String(error)
       });
     }
-
-    const data =
-      await getCandles(timeframe);
-
-    res.json(data);
-
-  } catch (error) {
-    console.error(error);
-
-    res.status(500).json({
-      ok: false,
-      error: error.message
-    });
   }
-});
+);
 
 
 // ==========================================
 // SERVER
 // ==========================================
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    `xauusd-123 running on port ${PORT}`
-  );
-});
+app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+    console.log(
+      `xauusd-123 running on port ${PORT}`
+    );
+  }
+);
