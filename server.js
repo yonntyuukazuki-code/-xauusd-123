@@ -3,7 +3,6 @@ import WebSocket from "ws";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
 const SYMBOL = "OANDA:XAUUSD";
 
 const TIMEFRAMES = {
@@ -13,6 +12,11 @@ const TIMEFRAMES = {
   h4:  { interval: "240", label: "H4",  bars: 100 },
   d1:  { interval: "1D",  label: "D1",  bars: 100 }
 };
+
+
+// ======================================================
+// TRADINGVIEW
+// ======================================================
 
 function frame(message) {
   const data = JSON.stringify(message);
@@ -149,7 +153,7 @@ function getCandles(timeframe) {
     ws.on("message", raw => {
       const text = raw.toString();
 
-      // TradingView heartbeat
+      // Heartbeat
       const heartbeatRegex =
         /~m~\d+~m~(~h~\d+)/g;
 
@@ -166,7 +170,6 @@ function getCandles(timeframe) {
         } catch {}
       }
 
-      // TradingView frames
       const parts =
         text.split(/~m~\d+~m~/);
 
@@ -249,7 +252,12 @@ function getCandles(timeframe) {
                   : Number(v[5])
             };
           })
-          .filter(Boolean);
+          .filter(Boolean)
+          .sort(
+            (a, b) =>
+              new Date(a.time) -
+              new Date(b.time)
+          );
 
         if (candles.length === 0) {
           continue;
@@ -287,9 +295,516 @@ function getCandles(timeframe) {
 }
 
 
-// ==========================================
+// ======================================================
+// INDICATORS
+// ======================================================
+
+function round(value, digits = 3) {
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(value)
+  ) {
+    return null;
+  }
+
+  return Number(value.toFixed(digits));
+}
+
+
+function ema(values, period) {
+  if (values.length < period) {
+    return null;
+  }
+
+  const multiplier =
+    2 / (period + 1);
+
+  let current =
+    values
+      .slice(0, period)
+      .reduce((a, b) => a + b, 0) /
+    period;
+
+  for (
+    let i = period;
+    i < values.length;
+    i++
+  ) {
+    current =
+      values[i] * multiplier +
+      current * (1 - multiplier);
+  }
+
+  return current;
+}
+
+
+function rsiWilder(values, period = 14) {
+  if (values.length < period + 1) {
+    return null;
+  }
+
+  let gains = 0;
+  let losses = 0;
+
+  for (
+    let i = 1;
+    i <= period;
+    i++
+  ) {
+    const change =
+      values[i] - values[i - 1];
+
+    if (change >= 0) {
+      gains += change;
+    } else {
+      losses += Math.abs(change);
+    }
+  }
+
+  let avgGain =
+    gains / period;
+
+  let avgLoss =
+    losses / period;
+
+  for (
+    let i = period + 1;
+    i < values.length;
+    i++
+  ) {
+    const change =
+      values[i] - values[i - 1];
+
+    const gain =
+      change > 0 ? change : 0;
+
+    const loss =
+      change < 0
+        ? Math.abs(change)
+        : 0;
+
+    avgGain =
+      (
+        avgGain * (period - 1) +
+        gain
+      ) / period;
+
+    avgLoss =
+      (
+        avgLoss * (period - 1) +
+        loss
+      ) / period;
+  }
+
+  if (avgLoss === 0) {
+    return 100;
+  }
+
+  const rs =
+    avgGain / avgLoss;
+
+  return (
+    100 -
+    100 / (1 + rs)
+  );
+}
+
+
+function atrWilder(candles, period = 14) {
+  if (candles.length < period + 1) {
+    return null;
+  }
+
+  const tr = [];
+
+  for (
+    let i = 1;
+    i < candles.length;
+    i++
+  ) {
+    const current =
+      candles[i];
+
+    const previous =
+      candles[i - 1];
+
+    tr.push(
+      Math.max(
+        current.high - current.low,
+        Math.abs(
+          current.high -
+          previous.close
+        ),
+        Math.abs(
+          current.low -
+          previous.close
+        )
+      )
+    );
+  }
+
+  if (tr.length < period) {
+    return null;
+  }
+
+  let atr =
+    tr
+      .slice(0, period)
+      .reduce((a, b) => a + b, 0) /
+    period;
+
+  for (
+    let i = period;
+    i < tr.length;
+    i++
+  ) {
+    atr =
+      (
+        atr * (period - 1) +
+        tr[i]
+      ) / period;
+  }
+
+  return atr;
+}
+
+
+// ======================================================
+// RANGE HIGH / LOW
+// ======================================================
+
+function rangeStats(candles, bars) {
+  const slice =
+    candles.slice(-bars);
+
+  if (slice.length === 0) {
+    return null;
+  }
+
+  const highest =
+    slice.reduce(
+      (a, b) =>
+        b.high > a.high ? b : a
+    );
+
+  const lowest =
+    slice.reduce(
+      (a, b) =>
+        b.low < a.low ? b : a
+    );
+
+  return {
+    bars: slice.length,
+
+    high: {
+      price: highest.high,
+      time: highest.time
+    },
+
+    low: {
+      price: lowest.low,
+      time: lowest.time
+    }
+  };
+}
+
+
+// ======================================================
+// SWING POINTS
+// 2 candles left + 2 candles right
+// ======================================================
+
+function findSwings(candles) {
+  const highs = [];
+  const lows = [];
+
+  for (
+    let i = 2;
+    i < candles.length - 2;
+    i++
+  ) {
+    const c = candles[i];
+
+    const swingHigh =
+      c.high >
+        candles[i - 1].high &&
+      c.high >
+        candles[i - 2].high &&
+      c.high >=
+        candles[i + 1].high &&
+      c.high >=
+        candles[i + 2].high;
+
+    const swingLow =
+      c.low <
+        candles[i - 1].low &&
+      c.low <
+        candles[i - 2].low &&
+      c.low <=
+        candles[i + 1].low &&
+      c.low <=
+        candles[i + 2].low;
+
+    if (swingHigh) {
+      highs.push({
+        time: c.time,
+        price: c.high
+      });
+    }
+
+    if (swingLow) {
+      lows.push({
+        time: c.time,
+        price: c.low
+      });
+    }
+  }
+
+  return {
+    highs: highs.slice(-5),
+    lows: lows.slice(-5)
+  };
+}
+
+
+// ======================================================
+// FAIR VALUE GAPS
+//
+// Bullish FVG:
+// candle 1 high < candle 3 low
+//
+// Bearish FVG:
+// candle 1 low > candle 3 high
+// ======================================================
+
+function findFVG(candles) {
+  const gaps = [];
+
+  const start =
+    Math.max(
+      2,
+      candles.length - 50
+    );
+
+  for (
+    let i = start;
+    i < candles.length;
+    i++
+  ) {
+    const first =
+      candles[i - 2];
+
+    const third =
+      candles[i];
+
+    // Bullish FVG
+    if (
+      first.high <
+      third.low
+    ) {
+      const lower =
+        first.high;
+
+      const upper =
+        third.low;
+
+      let touched = false;
+      let fullyFilled = false;
+
+      for (
+        let j = i + 1;
+        j < candles.length;
+        j++
+      ) {
+        if (
+          candles[j].low <= upper
+        ) {
+          touched = true;
+        }
+
+        if (
+          candles[j].low <= lower
+        ) {
+          fullyFilled = true;
+          break;
+        }
+      }
+
+      gaps.push({
+        type: "bullish",
+        createdAt: third.time,
+        lower: round(lower),
+        upper: round(upper),
+        touched,
+        fullyFilled
+      });
+    }
+
+    // Bearish FVG
+    if (
+      first.low >
+      third.high
+    ) {
+      const lower =
+        third.high;
+
+      const upper =
+        first.low;
+
+      let touched = false;
+      let fullyFilled = false;
+
+      for (
+        let j = i + 1;
+        j < candles.length;
+        j++
+      ) {
+        if (
+          candles[j].high >= lower
+        ) {
+          touched = true;
+        }
+
+        if (
+          candles[j].high >= upper
+        ) {
+          fullyFilled = true;
+          break;
+        }
+      }
+
+      gaps.push({
+        type: "bearish",
+        createdAt: third.time,
+        lower: round(lower),
+        upper: round(upper),
+        touched,
+        fullyFilled
+      });
+    }
+  }
+
+  return gaps.slice(-10);
+}
+
+
+// ======================================================
+// TIMEFRAME ANALYSIS
+// ======================================================
+
+function analyzeCandles(candles) {
+  const closes =
+    candles.map(c => c.close);
+
+  const latest =
+    candles[candles.length - 1];
+
+  const ema20 =
+    ema(closes, 20);
+
+  const ema50 =
+    ema(closes, 50);
+
+  const rsi14 =
+    rsiWilder(closes, 14);
+
+  const atr14 =
+    atrWilder(candles, 14);
+
+  const swings =
+    findSwings(candles);
+
+  const fvg =
+    findFVG(candles);
+
+  let emaBias = "neutral";
+
+  if (
+    latest.close > ema20 &&
+    ema20 > ema50
+  ) {
+    emaBias = "bullish";
+  }
+
+  if (
+    latest.close < ema20 &&
+    ema20 < ema50
+  ) {
+    emaBias = "bearish";
+  }
+
+  return {
+    candleCount:
+      candles.length,
+
+    latest: {
+      time: latest.time,
+      open: latest.open,
+      high: latest.high,
+      low: latest.low,
+      close: latest.close,
+      volume: latest.volume
+    },
+
+    indicators: {
+      ema20: round(ema20),
+      ema50: round(ema50),
+      rsi14: round(rsi14, 2),
+      atr14: round(atr14)
+    },
+
+    emaBias,
+
+    ranges: {
+      last20:
+        rangeStats(candles, 20),
+
+      last50:
+        rangeStats(candles, 50)
+    },
+
+    swings,
+
+    fvg
+  };
+}
+
+
+// ======================================================
+// FETCH ALL SEQUENTIALLY
+// ======================================================
+
+async function getAllTimeframes() {
+  const m5 =
+    await getCandles("m5");
+
+  const m15 =
+    await getCandles("m15");
+
+  const h1 =
+    await getCandles("h1");
+
+  const h4 =
+    await getCandles("h4");
+
+  const d1 =
+    await getCandles("d1");
+
+  return {
+    M5: m5,
+    M15: m15,
+    H1: h1,
+    H4: h4,
+    D1: d1
+  };
+}
+
+
+// ======================================================
 // ROOT
-// ==========================================
+// ======================================================
 
 app.get("/", (req, res) => {
   res.json({
@@ -303,92 +818,165 @@ app.get("/", (req, res) => {
       H1: "/xauusd/h1",
       H4: "/xauusd/h4",
       D1: "/xauusd/d1",
-      ALL: "/xauusd/all"
+      ALL: "/xauusd/all",
+      ANALYSIS: "/xauusd/analysis"
     }
   });
 });
 
 
-// ==========================================
-// ALL TIMEFRAMES
-// Sequential to avoid 5 simultaneous
-// TradingView WebSocket connections
-// ==========================================
+// ======================================================
+// ANALYSIS
+// Must be above /xauusd/:timeframe
+// ======================================================
 
-app.get("/xauusd/all", async (req, res) => {
-  try {
-    const startedAt = Date.now();
+app.get(
+  "/xauusd/analysis",
+  async (req, res) => {
+    try {
+      const startedAt =
+        Date.now();
 
-    const m5 =
-      await getCandles("m5");
+      const all =
+        await getAllTimeframes();
 
-    const m15 =
-      await getCandles("m15");
+      const analysis = {};
 
-    const h1 =
-      await getCandles("h1");
-
-    const h4 =
-      await getCandles("h4");
-
-    const d1 =
-      await getCandles("d1");
-
-    res.set("Cache-Control", "no-store");
-
-    res.json({
-      ok: true,
-      symbol: SYMBOL,
-
-      generatedAt:
-        new Date().toISOString(),
-
-      durationMs:
-        Date.now() - startedAt,
-
-      counts: {
-        M5: m5.candles.length,
-        M15: m15.candles.length,
-        H1: h1.candles.length,
-        H4: h4.candles.length,
-        D1: d1.candles.length
-      },
-
-      data: {
-        M5: m5.candles,
-        M15: m15.candles,
-        H1: h1.candles,
-        H4: h4.candles,
-        D1: d1.candles
+      for (
+        const [key, value]
+        of Object.entries(all)
+      ) {
+        analysis[key] =
+          analyzeCandles(
+            value.candles
+          );
       }
-    });
 
-  } catch (error) {
-    console.error(error);
+      res.set(
+        "Cache-Control",
+        "no-store"
+      );
 
-    res.status(500).json({
-      ok: false,
-      error:
-        error?.message ||
-        String(error)
-    });
+      res.json({
+        ok: true,
+        symbol: SYMBOL,
+
+        generatedAt:
+          new Date().toISOString(),
+
+        durationMs:
+          Date.now() - startedAt,
+
+        analysis
+      });
+
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
+        ok: false,
+        error:
+          error?.message ||
+          String(error)
+      });
+    }
   }
-});
+);
 
 
-// ==========================================
+// ======================================================
+// ALL RAW OHLC
+// ======================================================
+
+app.get(
+  "/xauusd/all",
+  async (req, res) => {
+    try {
+      const startedAt =
+        Date.now();
+
+      const all =
+        await getAllTimeframes();
+
+      res.set(
+        "Cache-Control",
+        "no-store"
+      );
+
+      res.json({
+        ok: true,
+        symbol: SYMBOL,
+
+        generatedAt:
+          new Date().toISOString(),
+
+        durationMs:
+          Date.now() - startedAt,
+
+        counts: {
+          M5:
+            all.M5.candles.length,
+
+          M15:
+            all.M15.candles.length,
+
+          H1:
+            all.H1.candles.length,
+
+          H4:
+            all.H4.candles.length,
+
+          D1:
+            all.D1.candles.length
+        },
+
+        data: {
+          M5:
+            all.M5.candles,
+
+          M15:
+            all.M15.candles,
+
+          H1:
+            all.H1.candles,
+
+          H4:
+            all.H4.candles,
+
+          D1:
+            all.D1.candles
+        }
+      });
+
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
+        ok: false,
+        error:
+          error?.message ||
+          String(error)
+      });
+    }
+  }
+);
+
+
+// ======================================================
 // SINGLE TIMEFRAME
-// Keep this AFTER /xauusd/all
-// ==========================================
+// ======================================================
 
 app.get(
   "/xauusd/:timeframe",
   async (req, res) => {
     try {
       const timeframe =
-        req.params.timeframe.toLowerCase();
+        req.params.timeframe
+          .toLowerCase();
 
-      if (!TIMEFRAMES[timeframe]) {
+      if (
+        !TIMEFRAMES[timeframe]
+      ) {
         return res
           .status(400)
           .json({
@@ -397,12 +985,16 @@ app.get(
               "Unsupported timeframe",
 
             supported:
-              Object.keys(TIMEFRAMES)
+              Object.keys(
+                TIMEFRAMES
+              )
           });
       }
 
       const data =
-        await getCandles(timeframe);
+        await getCandles(
+          timeframe
+        );
 
       res.set(
         "Cache-Control",
@@ -425,9 +1017,9 @@ app.get(
 );
 
 
-// ==========================================
+// ======================================================
 // SERVER
-// ==========================================
+// ======================================================
 
 app.listen(
   PORT,
