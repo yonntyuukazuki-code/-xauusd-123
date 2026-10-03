@@ -4,8 +4,6 @@ import WebSocket from "ws";
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const SYMBOL = "OANDA:XAUUSD";
-
 function frame(message) {
   const data = JSON.stringify(message);
   return `~m~${data.length}~m~${data}`;
@@ -15,58 +13,22 @@ function session(prefix) {
   return `${prefix}_${Math.random().toString(36).slice(2, 14)}`;
 }
 
-function getFrames(text) {
-  const frames = [];
-  let pos = 0;
-
-  while (pos < text.length) {
-    if (!text.startsWith("~m~", pos)) {
-      pos++;
-      continue;
-    }
-
-    const lenStart = pos + 3;
-    const lenEnd = text.indexOf("~m~", lenStart);
-
-    if (lenEnd === -1) break;
-
-    const length = Number(text.slice(lenStart, lenEnd));
-
-    if (!Number.isFinite(length)) {
-      pos++;
-      continue;
-    }
-
-    const dataStart = lenEnd + 3;
-    const dataEnd = dataStart + length;
-
-    if (dataEnd > text.length) break;
-
-    frames.push(text.slice(dataStart, dataEnd));
-    pos = dataEnd;
-  }
-
-  return frames;
-}
-
 function getM5() {
   return new Promise((resolve, reject) => {
-    let finished = false;
-
     const ws = new WebSocket(
       "wss://data.tradingview.com/socket.io/websocket",
       {
         headers: {
           Origin: "https://www.tradingview.com",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129 Safari/537.36"
-        },
-        handshakeTimeout: 15000
+          "User-Agent": "Mozilla/5.0"
+        }
       }
     );
 
     const chartSession = session("cs");
     const quoteSession = session("qs");
+
+    let finished = false;
 
     const finishError = error => {
       if (finished) return;
@@ -80,21 +42,9 @@ function getM5() {
       reject(error);
     };
 
-    const finishSuccess = data => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-
-      try {
-        ws.close();
-      } catch {}
-
-      resolve(data);
-    };
-
     const timeout = setTimeout(() => {
       finishError(new Error("TradingView timeout"));
-    }, 30000);
+    }, 20000);
 
     ws.on("open", () => {
       const send = (method, params) => {
@@ -106,8 +56,12 @@ function getM5() {
         );
       };
 
-      send("set_auth_token", ["unauthorized_user"]);
+      // Anonymous TradingView authentication
+      send("set_auth_token", [
+        "unauthorized_user_token"
+      ]);
 
+      // Sessions
       send("chart_create_session", [
         chartSession,
         ""
@@ -117,38 +71,39 @@ function getM5() {
         quoteSession
       ]);
 
+      // Quote fields
       send("quote_set_fields", [
         quoteSession,
+        "lp",
         "ch",
         "chp",
-        "current_session",
-        "description",
-        "exchange",
-        "lp",
-        "lp_time",
-        "minmov",
-        "minmove2",
-        "pricescale",
-        "pro_name",
         "short_name",
-        "type"
+        "exchange"
       ]);
 
       send("quote_add_symbols", [
         quoteSession,
-        SYMBOL,
-        { flags: ["force_permission"] }
+        "OANDA:XAUUSD",
+        {
+          flags: ["force_permission"]
+        }
       ]);
 
-      const symbolConfig =
-        `={"symbol":"${SYMBOL}","adjustment":"splits","session":"regular"}`;
+      // TradingView symbol descriptor
+      const symbolDescriptor =
+        "=" +
+        JSON.stringify({
+          symbol: "OANDA:XAUUSD",
+          adjustment: "splits"
+        });
 
       send("resolve_symbol", [
         chartSession,
         "symbol_1",
-        symbolConfig
+        symbolDescriptor
       ]);
 
+      // Latest 10 M5 candles
       send("create_series", [
         chartSession,
         "s1",
@@ -162,46 +117,65 @@ function getM5() {
     ws.on("message", raw => {
       const text = raw.toString();
 
-      for (const payload of getFrames(text)) {
-        // TradingView heartbeat
-        if (payload.startsWith("~h~")) {
-          try {
-            ws.send(`~m~${payload.length}~m~${payload}`);
-          } catch {}
+      // Echo TradingView heartbeat
+      const heartbeatRegex =
+        /~m~\d+~m~(~h~\d+)/g;
 
+      let heartbeat;
+
+      while (
+        (heartbeat = heartbeatRegex.exec(text)) !== null
+      ) {
+        ws.send(
+          `~m~${heartbeat[1].length}~m~${heartbeat[1]}`
+        );
+      }
+
+      // Split TradingView frames
+      const parts = text.split(/~m~\d+~m~/);
+
+      for (const part of parts) {
+        if (!part || !part.startsWith("{")) {
           continue;
         }
 
         let msg;
 
         try {
-          msg = JSON.parse(payload);
+          msg = JSON.parse(part);
         } catch {
           continue;
         }
 
-        if (msg?.m === "critical_error") {
+        if (msg.m === "symbol_error") {
           finishError(
             new Error(
-              `TradingView critical_error: ${JSON.stringify(msg.p)}`
+              `TradingView symbol error: ${JSON.stringify(
+                msg.p
+              )}`
             )
           );
           return;
         }
 
-        if (msg?.m !== "timescale_update") continue;
+        if (msg.m !== "timescale_update") {
+          continue;
+        }
 
-        const update = msg?.p?.[1];
+        const payload = msg?.p?.[1];
 
-        if (!update || typeof update !== "object") continue;
+        if (!payload) continue;
 
         const series =
-          update?.s1?.s ??
-          Object.values(update).find(
+          payload?.s1?.s ||
+          Object.values(payload).find(
             value => Array.isArray(value?.s)
           )?.s;
 
-        if (!Array.isArray(series) || series.length === 0) {
+        if (
+          !Array.isArray(series) ||
+          series.length === 0
+        ) {
           continue;
         }
 
@@ -209,34 +183,45 @@ function getM5() {
           .map(bar => {
             const v = bar?.v;
 
-            if (!Array.isArray(v) || v.length < 5) {
+            if (!Array.isArray(v)) {
               return null;
             }
 
             return {
-              time: new Date(Number(v[0]) * 1000).toISOString(),
+              time: new Date(
+                Number(v[0]) * 1000
+              ).toISOString(),
+
               open: Number(v[1]),
               high: Number(v[2]),
               low: Number(v[3]),
               close: Number(v[4]),
+
               volume:
                 v[5] == null
                   ? null
                   : Number(v[5])
             };
           })
-          .filter(Boolean)
-          .sort(
-            (a, b) =>
-              new Date(a.time).getTime() -
-              new Date(b.time).getTime()
-          );
+          .filter(Boolean);
 
-        if (candles.length === 0) continue;
+        if (candles.length === 0) {
+          continue;
+        }
 
-        finishSuccess({
+        if (finished) return;
+
+        finished = true;
+
+        clearTimeout(timeout);
+
+        try {
+          ws.close();
+        } catch {}
+
+        resolve({
           ok: true,
-          symbol: SYMBOL,
+          symbol: "OANDA:XAUUSD",
           timeframe: "M5",
           count: candles.length,
           candles
@@ -250,47 +235,42 @@ function getM5() {
       finishError(error);
     });
 
-    ws.on("unexpected-response", (request, response) => {
+    ws.on("close", (code, reason) => {
+      if (finished) return;
+
       finishError(
         new Error(
-          `TradingView HTTP ${response.statusCode}`
+          `TradingView socket closed (${code}) ${
+            reason?.toString() || ""
+          }`
         )
       );
-    });
-
-    ws.on("close", (code, reason) => {
-      if (!finished) {
-        finishError(
-          new Error(
-            `TradingView socket closed (${code}) ${reason.toString()}`
-          )
-        );
-      }
     });
   });
 }
 
+// Health check
 app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "xauusd-123",
-    symbol: SYMBOL,
-    test: "/xauusd/m5"
+    symbol: "OANDA:XAUUSD",
+    endpoint: "/xauusd/m5"
   });
 });
 
+// XAUUSD M5
 app.get("/xauusd/m5", async (req, res) => {
   try {
     const data = await getM5();
 
-    res.set("Cache-Control", "no-store");
     res.json(data);
   } catch (error) {
     console.error(error);
 
     res.status(500).json({
       ok: false,
-      error: error?.message || String(error)
+      error: error.message
     });
   }
 });
