@@ -214,6 +214,7 @@ function getCandles(timeframe) {
         }
 
         const payload = msg?.p?.[1];
+
         if (!payload) continue;
 
         const series =
@@ -297,13 +298,11 @@ function getCandles(timeframe) {
 
 
 // ======================================================
-// EMA
+// INDICATORS
 // ======================================================
 
 function ema(values, period) {
-  if (values.length < period) {
-    return null;
-  }
+  if (values.length < period) return null;
 
   let value =
     values
@@ -327,10 +326,6 @@ function ema(values, period) {
 }
 
 
-// ======================================================
-// RSI - WILDER
-// ======================================================
-
 function rsiWilder(values, period = 14) {
   if (values.length < period + 1) {
     return null;
@@ -339,26 +334,16 @@ function rsiWilder(values, period = 14) {
   let gains = 0;
   let losses = 0;
 
-  for (
-    let i = 1;
-    i <= period;
-    i++
-  ) {
+  for (let i = 1; i <= period; i++) {
     const change =
       values[i] - values[i - 1];
 
-    gains +=
-      Math.max(change, 0);
-
-    losses +=
-      Math.max(-change, 0);
+    gains += Math.max(change, 0);
+    losses += Math.max(-change, 0);
   }
 
-  let avgGain =
-    gains / period;
-
-  let avgLoss =
-    losses / period;
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
 
   for (
     let i = period + 1;
@@ -368,28 +353,20 @@ function rsiWilder(values, period = 14) {
     const change =
       values[i] - values[i - 1];
 
-    const gain =
-      Math.max(change, 0);
-
-    const loss =
-      Math.max(-change, 0);
-
     avgGain =
       (
         avgGain * (period - 1) +
-        gain
+        Math.max(change, 0)
       ) / period;
 
     avgLoss =
       (
         avgLoss * (period - 1) +
-        loss
+        Math.max(-change, 0)
       ) / period;
   }
 
-  if (avgLoss === 0) {
-    return 100;
-  }
+  if (avgLoss === 0) return 100;
 
   const rs =
     avgGain / avgLoss;
@@ -397,10 +374,6 @@ function rsiWilder(values, period = 14) {
   return 100 - 100 / (1 + rs);
 }
 
-
-// ======================================================
-// ATR - WILDER
-// ======================================================
 
 function atrWilder(candles, period = 14) {
   if (candles.length < period + 1) {
@@ -420,12 +393,8 @@ function atrWilder(candles, period = 14) {
     tr.push(
       Math.max(
         c.high - c.low,
-        Math.abs(
-          c.high - p.close
-        ),
-        Math.abs(
-          c.low - p.close
-        )
+        Math.abs(c.high - p.close),
+        Math.abs(c.low - p.close)
       )
     );
   }
@@ -453,7 +422,7 @@ function atrWilder(candles, period = 14) {
 
 
 // ======================================================
-// RANGES
+// RANGE
 // ======================================================
 
 function getRange(candles, bars) {
@@ -473,16 +442,8 @@ function getRange(candles, bars) {
     );
 
   return {
-    high: {
-      price: round(highest.high),
-      time: highest.time
-    },
-
-    low: {
-      price: round(lowest.low),
-      time: lowest.time
-    },
-
+    high: round(highest.high),
+    low: round(lowest.low),
     midpoint:
       round(
         (
@@ -496,7 +457,6 @@ function getRange(candles, bars) {
 
 // ======================================================
 // SWINGS
-// 2 candles each side
 // ======================================================
 
 function findSwings(candles) {
@@ -510,34 +470,26 @@ function findSwings(candles) {
   ) {
     const c = candles[i];
 
-    const high =
-      c.high >
-        candles[i - 1].high &&
-      c.high >
-        candles[i - 2].high &&
-      c.high >=
-        candles[i + 1].high &&
-      c.high >=
-        candles[i + 2].high;
+    const isHigh =
+      c.high > candles[i - 1].high &&
+      c.high > candles[i - 2].high &&
+      c.high >= candles[i + 1].high &&
+      c.high >= candles[i + 2].high;
 
-    const low =
-      c.low <
-        candles[i - 1].low &&
-      c.low <
-        candles[i - 2].low &&
-      c.low <=
-        candles[i + 1].low &&
-      c.low <=
-        candles[i + 2].low;
+    const isLow =
+      c.low < candles[i - 1].low &&
+      c.low < candles[i - 2].low &&
+      c.low <= candles[i + 1].low &&
+      c.low <= candles[i + 2].low;
 
-    if (high) {
+    if (isHigh) {
       highs.push({
         time: c.time,
         price: round(c.high)
       });
     }
 
-    if (low) {
+    if (isLow) {
       lows.push({
         time: c.time,
         price: round(c.low)
@@ -556,7 +508,7 @@ function findSwings(candles) {
 // MARKET STRUCTURE
 // ======================================================
 
-function marketStructure(swings) {
+function getStructure(swings) {
   const highs =
     swings.highs.slice(-2);
 
@@ -575,20 +527,16 @@ function marketStructure(swings) {
   }
 
   const highStructure =
-    highs[1].price >
-    highs[0].price
+    highs[1].price > highs[0].price
       ? "HH"
-      : highs[1].price <
-        highs[0].price
+      : highs[1].price < highs[0].price
       ? "LH"
       : "EH";
 
   const lowStructure =
-    lows[1].price >
-    lows[0].price
+    lows[1].price > lows[0].price
       ? "HL"
-      : lows[1].price <
-        lows[0].price
+      : lows[1].price < lows[0].price
       ? "LL"
       : "EL";
 
@@ -611,77 +559,40 @@ function marketStructure(swings) {
   return {
     direction,
     highStructure,
-    lowStructure,
-
-    previousSwingHigh:
-      highs[0],
-
-    latestSwingHigh:
-      highs[1],
-
-    previousSwingLow:
-      lows[0],
-
-    latestSwingLow:
-      lows[1]
+    lowStructure
   };
 }
 
 
 // ======================================================
 // SUPPORT / RESISTANCE
-//
-// Uses recent confirmed swing points.
-// These are candidates, not absolute levels.
 // ======================================================
 
-function supportResistance(
+function getLevels(
   swings,
-  currentPrice
+  price
 ) {
   const supports =
     swings.lows
       .filter(
-        s =>
-          s.price <
-          currentPrice
+        x => x.price < price
       )
       .sort(
         (a, b) =>
           b.price - a.price
       )
-      .slice(0, 3)
-      .map(s => ({
-        price: s.price,
-        time: s.time,
-        distance:
-          round(
-            currentPrice -
-            s.price
-          )
-      }));
+      .slice(0, 3);
 
   const resistances =
     swings.highs
       .filter(
-        s =>
-          s.price >
-          currentPrice
+        x => x.price > price
       )
       .sort(
         (a, b) =>
           a.price - b.price
       )
-      .slice(0, 3)
-      .map(s => ({
-        price: s.price,
-        time: s.time,
-        distance:
-          round(
-            s.price -
-            currentPrice
-          )
-      }));
+      .slice(0, 3);
 
   return {
     supports,
@@ -691,11 +602,11 @@ function supportResistance(
 
 
 // ======================================================
-// FVG + INVALIDATION / IFVG CANDIDATE
+// FVG / IFVG CANDIDATES
 // ======================================================
 
 function findFVG(candles) {
-  const gaps = [];
+  const result = [];
 
   const start =
     Math.max(
@@ -714,24 +625,15 @@ function findFVG(candles) {
     const third =
       candles[i];
 
-    // -------------------------
+
     // BULLISH FVG
-    // -------------------------
-
-    if (
-      first.high <
-      third.low
-    ) {
-      const lower =
-        first.high;
-
-      const upper =
-        third.low;
+    if (first.high < third.low) {
+      const lower = first.high;
+      const upper = third.low;
 
       let touched = false;
       let filled = false;
       let invalidated = false;
-      let invalidatedAt = null;
 
       for (
         let j = i + 1;
@@ -740,82 +642,43 @@ function findFVG(candles) {
       ) {
         const c = candles[j];
 
-        if (
-          c.low <= upper
-        ) {
+        if (c.low <= upper) {
           touched = true;
         }
 
-        if (
-          c.low <= lower
-        ) {
+        if (c.low <= lower) {
           filled = true;
         }
 
-        // close through opposite side
-        if (
-          c.close < lower
-        ) {
+        if (c.close < lower) {
           invalidated = true;
-          invalidatedAt =
-            c.time;
           break;
         }
       }
 
-      gaps.push({
-        originalType:
-          "bullish",
-
-        createdAt:
-          third.time,
-
-        lower:
-          round(lower),
-
-        upper:
-          round(upper),
-
+      result.push({
+        type: "bullish",
+        lower: round(lower),
+        upper: round(upper),
         midpoint:
           round(
             (lower + upper) / 2
           ),
-
         touched,
         filled,
-        invalidated,
-        invalidatedAt,
-
-        status:
-          invalidated
-            ? "ifvg-candidate-bearish"
-            : filled
-            ? "filled"
-            : touched
-            ? "partially-mitigated"
-            : "open"
+        invalidated
       });
     }
 
 
-    // -------------------------
     // BEARISH FVG
-    // -------------------------
-
-    if (
-      first.low >
-      third.high
-    ) {
-      const lower =
-        third.high;
-
-      const upper =
-        first.low;
+    if (first.low > third.high) {
+      const lower = third.high;
+      const upper = first.low;
 
       let touched = false;
       let filled = false;
       let invalidated = false;
-      let invalidatedAt = null;
 
       for (
         let j = i + 1;
@@ -824,72 +687,44 @@ function findFVG(candles) {
       ) {
         const c = candles[j];
 
-        if (
-          c.high >= lower
-        ) {
+        if (c.high >= lower) {
           touched = true;
         }
 
-        if (
-          c.high >= upper
-        ) {
+        if (c.high >= upper) {
           filled = true;
         }
 
-        if (
-          c.close > upper
-        ) {
+        if (c.close > upper) {
           invalidated = true;
-          invalidatedAt =
-            c.time;
           break;
         }
       }
 
-      gaps.push({
-        originalType:
-          "bearish",
-
-        createdAt:
-          third.time,
-
-        lower:
-          round(lower),
-
-        upper:
-          round(upper),
-
+      result.push({
+        type: "bearish",
+        lower: round(lower),
+        upper: round(upper),
         midpoint:
           round(
             (lower + upper) / 2
           ),
-
         touched,
         filled,
-        invalidated,
-        invalidatedAt,
-
-        status:
-          invalidated
-            ? "ifvg-candidate-bullish"
-            : filled
-            ? "filled"
-            : touched
-            ? "partially-mitigated"
-            : "open"
+        invalidated
       });
     }
   }
 
-  return gaps;
+  return result;
 }
 
 
 // ======================================================
-// ANALYSIS
+// ANALYZE ONE TIMEFRAME
 // ======================================================
 
-function analyzeCandles(candles) {
+function analyze(candles) {
   const latest =
     candles[candles.length - 1];
 
@@ -898,67 +733,57 @@ function analyzeCandles(candles) {
       c => c.close
     );
 
-  const ema20 =
+  const e20 =
     ema(closes, 20);
 
-  const ema50 =
+  const e50 =
     ema(closes, 50);
 
-  const rsi14 =
-    rsiWilder(
-      closes,
-      14
-    );
+  const rsi =
+    rsiWilder(closes);
 
-  const atr14 =
-    atrWilder(
-      candles,
-      14
-    );
+  const atr =
+    atrWilder(candles);
 
   const swings =
     findSwings(candles);
 
   const structure =
-    marketStructure(swings);
+    getStructure(swings);
 
   const levels =
-    supportResistance(
+    getLevels(
       swings,
       latest.close
     );
 
-  const allFvg =
+  const fvgs =
     findFVG(candles);
 
-  const activeFvg =
-    allFvg
-      .filter(
-        f =>
-          f.status === "open" ||
-          f.status ===
-            "partially-mitigated"
-      )
-      .slice(-10);
+  const activeFVG =
+    fvgs.filter(
+      x =>
+        !x.invalidated &&
+        !x.filled
+    );
 
-  const ifvgCandidates =
-    allFvg
-      .filter(
-        f =>
-          f.invalidated
-      )
-      .slice(-10);
+  const ifvg =
+    fvgs.filter(
+      x => x.invalidated
+    );
 
   let emaBias = "neutral";
 
   if (
-    latest.close > ema20 &&
-    ema20 > ema50
+    latest.close > e20 &&
+    e20 > e50
   ) {
     emaBias = "bullish";
-  } else if (
-    latest.close < ema20 &&
-    ema20 < ema50
+  }
+
+  if (
+    latest.close < e20 &&
+    e20 < e50
   ) {
     emaBias = "bearish";
   }
@@ -967,102 +792,151 @@ function analyzeCandles(candles) {
 
   if (
     emaBias === "bullish" &&
-    structure.direction ===
-      "bullish"
+    structure.direction === "bullish"
   ) {
     combinedBias = "bullish";
   }
 
   if (
     emaBias === "bearish" &&
-    structure.direction ===
-      "bearish"
+    structure.direction === "bearish"
   ) {
     combinedBias = "bearish";
   }
 
   return {
-    candleCount:
-      candles.length,
-
-    currentPrice:
+    price:
       round(latest.close),
 
-    latestCandle: {
-      time: latest.time,
-      open: latest.open,
-      high: latest.high,
-      low: latest.low,
-      close: latest.close,
-      volume: latest.volume
-    },
+    latestTime:
+      latest.time,
 
-    indicators: {
-      ema20:
-        round(ema20),
+    ema20:
+      round(e20),
 
-      ema50:
-        round(ema50),
+    ema50:
+      round(e50),
 
-      rsi14:
-        round(rsi14, 2),
+    rsi14:
+      round(rsi, 2),
 
-      atr14:
-        round(atr14)
-    },
+    atr14:
+      round(atr),
 
-    bias: {
-      ema:
-        emaBias,
+    emaBias,
 
-      marketStructure:
-        structure.direction,
+    structure:
+      structure.direction,
 
-      combined:
-        combinedBias
-    },
+    highStructure:
+      structure.highStructure,
 
-    marketStructure:
-      structure,
+    lowStructure:
+      structure.lowStructure,
 
-    ranges: {
-      last20:
-        getRange(
-          candles,
-          20
-        ),
+    combinedBias,
 
-      last50:
-        getRange(
-          candles,
-          50
-        )
-    },
+    range20High:
+      getRange(
+        candles,
+        20
+      ).high,
 
-    levels,
+    range20Low:
+      getRange(
+        candles,
+        20
+      ).low,
 
-    recentSwings: {
-      highs:
-        swings.highs.slice(-5),
+    range50High:
+      getRange(
+        candles,
+        50
+      ).high,
 
-      lows:
-        swings.lows.slice(-5)
-    },
+    range50Low:
+      getRange(
+        candles,
+        50
+      ).low,
 
-    fairValueGaps: {
-      active:
-        activeFvg,
+    support1:
+      levels.supports[0]?.price ??
+      null,
 
-      ifvgCandidates:
-        ifvgCandidates
-    }
+    support2:
+      levels.supports[1]?.price ??
+      null,
+
+    support3:
+      levels.supports[2]?.price ??
+      null,
+
+    resistance1:
+      levels.resistances[0]?.price ??
+      null,
+
+    resistance2:
+      levels.resistances[1]?.price ??
+      null,
+
+    resistance3:
+      levels.resistances[2]?.price ??
+      null,
+
+    latestSwingHigh:
+      swings.highs.at(-1)?.price ??
+      null,
+
+    previousSwingHigh:
+      swings.highs.at(-2)?.price ??
+      null,
+
+    latestSwingLow:
+      swings.lows.at(-1)?.price ??
+      null,
+
+    previousSwingLow:
+      swings.lows.at(-2)?.price ??
+      null,
+
+    activeFVG:
+      activeFVG
+        .slice(-5)
+        .map(x => ({
+          type: x.type,
+          lower: x.lower,
+          upper: x.upper,
+          midpoint: x.midpoint
+        })),
+
+    ifvgCandidates:
+      ifvg
+        .slice(-5)
+        .map(x => ({
+          originalType:
+            x.type,
+
+          newBias:
+            x.type === "bullish"
+              ? "bearish"
+              : "bullish",
+
+          lower:
+            x.lower,
+
+          upper:
+            x.upper,
+
+          midpoint:
+            x.midpoint
+        }))
   };
 }
 
 
 // ======================================================
-// ALL TIMEFRAMES
-// Sequential = more stable
+// GET ALL - SEQUENTIAL
 // ======================================================
 
 async function getAllTimeframes() {
@@ -1072,12 +946,12 @@ async function getAllTimeframes() {
     const key of
     Object.keys(TIMEFRAMES)
   ) {
-    const data =
+    const value =
       await getCandles(key);
 
     result[
       TIMEFRAMES[key].label
-    ] = data;
+    ] = value;
   }
 
   return result;
@@ -1092,7 +966,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "xauusd-123",
-    version: "analysis-v2",
+    version: "analysis-v3",
     symbol: SYMBOL,
 
     endpoints: {
@@ -1102,15 +976,85 @@ app.get("/", (req, res) => {
       H4: "/xauusd/h4",
       D1: "/xauusd/d1",
       ALL: "/xauusd/all",
-      ANALYSIS:
-        "/xauusd/analysis"
+      ANALYSIS: "/xauusd/analysis",
+      SUMMARY: "/xauusd/summary"
     }
   });
 });
 
 
 // ======================================================
-// ANALYSIS V2
+// CHATGPT SUMMARY
+// ======================================================
+
+app.get(
+  "/xauusd/summary",
+  async (req, res) => {
+    try {
+      const startedAt =
+        Date.now();
+
+      const all =
+        await getAllTimeframes();
+
+      const output = {};
+
+      for (
+        const [timeframe, value]
+        of Object.entries(all)
+      ) {
+        output[timeframe] =
+          analyze(
+            value.candles
+          );
+      }
+
+      res.set(
+        "Cache-Control",
+        "no-store"
+      );
+
+      res.json({
+        ok: true,
+        version:
+          "summary-v1",
+
+        symbol:
+          SYMBOL,
+
+        generatedAt:
+          new Date()
+            .toISOString(),
+
+        durationMs:
+          Date.now() -
+          startedAt,
+
+        M5: output.M5,
+        M15: output.M15,
+        H1: output.H1,
+        H4: output.H4,
+        D1: output.D1
+      });
+
+    } catch (error) {
+      console.error(error);
+
+      res
+        .status(500)
+        .json({
+          ok: false,
+          error:
+            error?.message ||
+            String(error)
+        });
+    }
+  }
+);
+
+
+// ======================================================
+// DETAILED ANALYSIS
 // ======================================================
 
 app.get(
@@ -1126,12 +1070,12 @@ app.get(
       const analysis = {};
 
       for (
-        const [timeframe, data]
+        const [timeframe, value]
         of Object.entries(all)
       ) {
         analysis[timeframe] =
-          analyzeCandles(
-            data.candles
+          analyze(
+            value.candles
           );
       }
 
@@ -1143,7 +1087,7 @@ app.get(
       res.json({
         ok: true,
         version:
-          "analysis-v2",
+          "analysis-v3",
 
         symbol:
           SYMBOL,
