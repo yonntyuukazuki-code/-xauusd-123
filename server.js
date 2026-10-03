@@ -13,7 +13,6 @@ function session(prefix) {
   return `${prefix}_${Math.random().toString(36).slice(2, 14)}`;
 }
 
-// TradingView interval mapping
 const TIMEFRAMES = {
   m5: {
     interval: "5",
@@ -151,7 +150,6 @@ function getCandles(timeframe) {
     ws.on("message", raw => {
       const text = raw.toString();
 
-      // TradingView heartbeat
       const heartbeatRegex =
         /~m~\d+~m~(~h~\d+)/g;
 
@@ -166,7 +164,6 @@ function getCandles(timeframe) {
         );
       }
 
-      // Split TradingView frames
       const parts =
         text.split(/~m~\d+~m~/);
 
@@ -278,20 +275,17 @@ function getCandles(timeframe) {
       finishError(error);
     });
 
-    ws.on(
-      "close",
-      (code, reason) => {
-        if (finished) return;
+    ws.on("close", (code, reason) => {
+      if (finished) return;
 
-        finishError(
-          new Error(
-            `TradingView socket closed (${code}) ${
-              reason?.toString() || ""
-            }`
-          )
-        );
-      }
-    );
+      finishError(
+        new Error(
+          `TradingView socket closed (${code}) ${
+            reason?.toString() || ""
+          }`
+        )
+      );
+    });
   });
 }
 
@@ -319,103 +313,98 @@ app.get("/", (req, res) => {
 
 
 // ==========================================
+// ALL TIMEFRAMES
+// IMPORTANT: must be before /xauusd/:timeframe
+// ==========================================
+
+app.get("/xauusd/all", async (req, res) => {
+  try {
+    const [
+      m5,
+      m15,
+      h1,
+      h4,
+      d1
+    ] = await Promise.all([
+      getCandles("m5"),
+      getCandles("m15"),
+      getCandles("h1"),
+      getCandles("h4"),
+      getCandles("d1")
+    ]);
+
+    res.json({
+      ok: true,
+      symbol: "OANDA:XAUUSD",
+      generatedAt: new Date().toISOString(),
+
+      counts: {
+        M5: m5.candles.length,
+        M15: m15.candles.length,
+        H1: h1.candles.length,
+        H4: h4.candles.length,
+        D1: d1.candles.length
+      },
+
+      data: {
+        M5: m5.candles,
+        M15: m15.candles,
+        H1: h1.candles,
+        H4: h4.candles,
+        D1: d1.candles
+      }
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message
+    });
+  }
+});
+
+
+// ==========================================
 // SINGLE TIMEFRAME
 // ==========================================
 
-app.get(
-  "/xauusd/:timeframe",
-  async (req, res) => {
-    try {
-      const timeframe =
-        req.params.timeframe.toLowerCase();
+app.get("/xauusd/:timeframe", async (req, res) => {
+  try {
+    const timeframe =
+      req.params.timeframe.toLowerCase();
 
-      if (!TIMEFRAMES[timeframe]) {
-        return res.status(400).json({
-          ok: false,
-          error:
-            "Unsupported timeframe",
-          supported: Object.keys(
-            TIMEFRAMES
-          )
-        });
-      }
-
-      const data =
-        await getCandles(timeframe);
-
-      res.json(data);
-
-    } catch (error) {
-      console.error(error);
-
-      res.status(500).json({
+    if (!TIMEFRAMES[timeframe]) {
+      return res.status(400).json({
         ok: false,
-        error: error.message
+        error: "Unsupported timeframe",
+        supported: Object.keys(TIMEFRAMES)
       });
     }
+
+    const data =
+      await getCandles(timeframe);
+
+    res.json(data);
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message
+    });
   }
-);
-
-
-// ==========================================
-// ALL TIMEFRAMES
-// ==========================================
-
-app.get(
-  "/xauusd/all",
-  async (req, res) => {
-    try {
-      const [
-        m5,
-        m15,
-        h1,
-        h4,
-        d1
-      ] = await Promise.all([
-        getCandles("m5"),
-        getCandles("m15"),
-        getCandles("h1"),
-        getCandles("h4"),
-        getCandles("d1")
-      ]);
-
-      res.json({
-        ok: true,
-        symbol: "OANDA:XAUUSD",
-        generatedAt:
-          new Date().toISOString(),
-
-        data: {
-          M5: m5.candles,
-          M15: m15.candles,
-          H1: h1.candles,
-          H4: h4.candles,
-          D1: d1.candles
-        }
-      });
-
-    } catch (error) {
-      console.error(error);
-
-      res.status(500).json({
-        ok: false,
-        error: error.message
-      });
-    }
-  }
-);
+});
 
 
 // ==========================================
 // SERVER
 // ==========================================
 
-app.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-    console.log(
-      `xauusd-123 running on port ${PORT}`
-    );
-  }
-);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(
+    `xauusd-123 running on port ${PORT}`
+  );
+});
