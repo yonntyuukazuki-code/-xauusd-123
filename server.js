@@ -1,16 +1,22 @@
 import express from "express";
 import WebSocket from "ws";
+import { randomUUID } from "node:crypto";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const app = express();
+
+app.use(express.json());
+
 const PORT = process.env.PORT || 3000;
 const SYMBOL = "OANDA:XAUUSD";
 
 const TIMEFRAMES = {
-  m5:  { interval: "5",   label: "M5",  bars: 100 },
-  m15: { interval: "15",  label: "M15", bars: 100 },
-  h1:  { interval: "60",  label: "H1",  bars: 100 },
-  h4:  { interval: "240", label: "H4",  bars: 100 },
-  d1:  { interval: "1D",  label: "D1",  bars: 100 }
+  m5: { interval: "5", label: "M5", bars: 100 },
+  m15: { interval: "15", label: "M15", bars: 100 },
+  h1: { interval: "60", label: "H1", bars: 100 },
+  h4: { interval: "240", label: "H4", bars: 100 },
+  d1: { interval: "1D", label: "D1", bars: 100 }
 };
 
 
@@ -334,7 +340,11 @@ function rsiWilder(values, period = 14) {
   let gains = 0;
   let losses = 0;
 
-  for (let i = 1; i <= period; i++) {
+  for (
+    let i = 1;
+    i <= period;
+    i++
+  ) {
     const change =
       values[i] - values[i - 1];
 
@@ -627,6 +637,7 @@ function findFVG(candles) {
 
 
     // BULLISH FVG
+
     if (first.high < third.low) {
       const lower = first.high;
       const upper = third.low;
@@ -672,6 +683,7 @@ function findFVG(candles) {
 
 
     // BEARISH FVG
+
     if (first.low > third.high) {
       const lower = third.high;
       const upper = first.low;
@@ -959,6 +971,373 @@ async function getAllTimeframes() {
 
 
 // ======================================================
+// BUILD SUMMARY
+// Used by REST + MCP
+// ======================================================
+
+async function buildSummary() {
+  const startedAt =
+    Date.now();
+
+  const all =
+    await getAllTimeframes();
+
+  const output = {};
+
+  for (
+    const [timeframe, value]
+    of Object.entries(all)
+  ) {
+    output[timeframe] =
+      analyze(
+        value.candles
+      );
+  }
+
+  return {
+    ok: true,
+    version: "summary-v1",
+    symbol: SYMBOL,
+
+    generatedAt:
+      new Date().toISOString(),
+
+    durationMs:
+      Date.now() - startedAt,
+
+    M5: output.M5,
+    M15: output.M15,
+    H1: output.H1,
+    H4: output.H4,
+    D1: output.D1
+  };
+}
+
+
+// ======================================================
+// MCP
+// ======================================================
+
+function createMcpServer() {
+  const server =
+    new McpServer({
+      name: "xauusd-123",
+      version: "1.0.0"
+    });
+
+  server.tool(
+    "get_xauusd_analysis",
+
+    `Get the latest OANDA:XAUUSD market data and technical analysis.
+
+Returns M5, M15, H1, H4 and D1 analysis including:
+price,
+EMA20,
+EMA50,
+RSI14,
+ATR14,
+EMA bias,
+HH/HL/LH/LL market structure,
+combined bias,
+20-bar and 50-bar ranges,
+support and resistance,
+recent swing highs and lows,
+active fair value gaps,
+and IFVG candidates.
+
+Use this tool whenever current XAUUSD technical market data is needed.`,
+
+    {},
+
+    async () => {
+      try {
+        const result =
+          await buildSummary();
+
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                JSON.stringify(
+                  result,
+                  null,
+                  2
+                )
+            }
+          ]
+        };
+
+      } catch (error) {
+        console.error(
+          "MCP tool error:",
+          error
+        );
+
+        return {
+          isError: true,
+
+          content: [
+            {
+              type: "text",
+              text:
+                JSON.stringify({
+                  ok: false,
+                  error:
+                    error?.message ||
+                    String(error)
+                })
+            }
+          ]
+        };
+      }
+    }
+  );
+
+  return server;
+}
+
+
+// ======================================================
+// MCP TRANSPORTS
+// ======================================================
+
+const mcpTransports =
+  new Map();
+
+
+// ======================================================
+// MCP POST
+// ======================================================
+
+app.post(
+  "/mcp",
+  async (req, res) => {
+    try {
+      const sessionId =
+        req.headers[
+          "mcp-session-id"
+        ];
+
+      let transport;
+
+      if (
+        sessionId &&
+        mcpTransports.has(
+          sessionId
+        )
+      ) {
+        transport =
+          mcpTransports.get(
+            sessionId
+          );
+
+      } else if (
+        !sessionId &&
+        req.body?.method ===
+          "initialize"
+      ) {
+        let createdTransport;
+
+        createdTransport =
+          new StreamableHTTPServerTransport({
+            sessionIdGenerator:
+              () => randomUUID(),
+
+            onsessioninitialized:
+              id => {
+                mcpTransports.set(
+                  id,
+                  createdTransport
+                );
+              }
+          });
+
+        createdTransport.onclose =
+          () => {
+            const id =
+              createdTransport.sessionId;
+
+            if (id) {
+              mcpTransports.delete(
+                id
+              );
+            }
+          };
+
+        const server =
+          createMcpServer();
+
+        await server.connect(
+          createdTransport
+        );
+
+        transport =
+          createdTransport;
+
+      } else {
+        res
+          .status(400)
+          .json({
+            jsonrpc: "2.0",
+
+            error: {
+              code: -32000,
+              message:
+                "Bad Request: No valid MCP session ID provided"
+            },
+
+            id: null
+          });
+
+        return;
+      }
+
+      await transport.handleRequest(
+        req,
+        res,
+        req.body
+      );
+
+    } catch (error) {
+      console.error(
+        "MCP POST error:",
+        error
+      );
+
+      if (!res.headersSent) {
+        res
+          .status(500)
+          .json({
+            jsonrpc: "2.0",
+
+            error: {
+              code: -32603,
+              message:
+                "Internal server error"
+            },
+
+            id: null
+          });
+      }
+    }
+  }
+);
+
+
+// ======================================================
+// MCP GET
+// ======================================================
+
+app.get(
+  "/mcp",
+  async (req, res) => {
+    try {
+      const sessionId =
+        req.headers[
+          "mcp-session-id"
+        ];
+
+      if (
+        !sessionId ||
+        !mcpTransports.has(
+          sessionId
+        )
+      ) {
+        res
+          .status(400)
+          .send(
+            "Invalid or missing MCP session ID"
+          );
+
+        return;
+      }
+
+      const transport =
+        mcpTransports.get(
+          sessionId
+        );
+
+      await transport.handleRequest(
+        req,
+        res
+      );
+
+    } catch (error) {
+      console.error(
+        "MCP GET error:",
+        error
+      );
+
+      if (!res.headersSent) {
+        res
+          .status(500)
+          .send(
+            "Internal server error"
+          );
+      }
+    }
+  }
+);
+
+
+// ======================================================
+// MCP DELETE
+// ======================================================
+
+app.delete(
+  "/mcp",
+  async (req, res) => {
+    try {
+      const sessionId =
+        req.headers[
+          "mcp-session-id"
+        ];
+
+      if (
+        !sessionId ||
+        !mcpTransports.has(
+          sessionId
+        )
+      ) {
+        res
+          .status(400)
+          .send(
+            "Invalid or missing MCP session ID"
+          );
+
+        return;
+      }
+
+      const transport =
+        mcpTransports.get(
+          sessionId
+        );
+
+      await transport.handleRequest(
+        req,
+        res
+      );
+
+    } catch (error) {
+      console.error(
+        "MCP DELETE error:",
+        error
+      );
+
+      if (!res.headersSent) {
+        res
+          .status(500)
+          .send(
+            "Internal server error"
+          );
+      }
+    }
+  }
+);
+
+
+// ======================================================
 // ROOT
 // ======================================================
 
@@ -966,7 +1345,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "xauusd-123",
-    version: "analysis-v3",
+    version: "analysis-v3-mcp",
     symbol: SYMBOL,
 
     endpoints: {
@@ -977,7 +1356,8 @@ app.get("/", (req, res) => {
       D1: "/xauusd/d1",
       ALL: "/xauusd/all",
       ANALYSIS: "/xauusd/analysis",
-      SUMMARY: "/xauusd/summary"
+      SUMMARY: "/xauusd/summary",
+      MCP: "/mcp"
     }
   });
 });
@@ -991,51 +1371,15 @@ app.get(
   "/xauusd/summary",
   async (req, res) => {
     try {
-      const startedAt =
-        Date.now();
-
-      const all =
-        await getAllTimeframes();
-
-      const output = {};
-
-      for (
-        const [timeframe, value]
-        of Object.entries(all)
-      ) {
-        output[timeframe] =
-          analyze(
-            value.candles
-          );
-      }
+      const result =
+        await buildSummary();
 
       res.set(
         "Cache-Control",
         "no-store"
       );
 
-      res.json({
-        ok: true,
-        version:
-          "summary-v1",
-
-        symbol:
-          SYMBOL,
-
-        generatedAt:
-          new Date()
-            .toISOString(),
-
-        durationMs:
-          Date.now() -
-          startedAt,
-
-        M5: output.M5,
-        M15: output.M15,
-        H1: output.H1,
-        H4: output.H4,
-        D1: output.D1
-      });
+      res.json(result);
 
     } catch (error) {
       console.error(error);
